@@ -2,12 +2,48 @@
 <html>
 <head>
     <meta charset="utf-8" />
+    <style>
+        body {
+            min-width: 250px;
+            margin: 16px;
+            font-family: sans-serif;
+        }
+
+        h1 {
+            margin-bottom: 8px;
+        }
+
+        label {
+            margin-bottom: 4px;
+            display: block;
+        }
+
+        #exportBtn {
+            padding: 8px 12px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            margin-top: 8px;
+        }
+    </style>
     <title>ChatGPT Export</title>
 </head>
 <body>
 <h1>ChatGPT Export</h1>
-<button id="exportBtn">대화 저장 (Markdown)</button>
+<br>
+<label>
+    <input type="checkbox" id="chkTimestamp" />
+    메세지별 날짜/시각 표시
+</label>
+<br>
+<label>
+    <input type="checkbox" id="chkAllRoles" />
+    모든 role 메세지 포함
+</label>
+<br/><br/>
+<br/><br/>
 
+<button id="exportBtn">대화 저장 (Markdown)</button>
 <script src="popup.js"></script>
 </body>
 </html>

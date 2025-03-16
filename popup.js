@@ -1,30 +1,62 @@
 // popup.js
-/**
- * 팝업에서 "대화 저장 (Markdown)" 버튼 클릭 -> content-script.js에 "REQUEST_EXPORT" 메시지 전송
- * content-script.js가 대화 내용을 MD로 변환 후 다운로드
- */
+
+const TIMESTAMP_KEY = "showTimestamp";
+const ALLROLES_KEY = "showAllRoles";
 
 document.addEventListener("DOMContentLoaded", () => {
+    const chkTimestamp = document.getElementById("chkTimestamp");
     const exportBtn = document.getElementById("exportBtn");
+    // 추가
+    const chkAllRoles = document.getElementById("chkAllRoles");
+
+    // 초기 로딩 시 storage에서 showTimestamp, showAllRoles 값 가져오기
+    chrome.storage.local.get([TIMESTAMP_KEY, ALLROLES_KEY], (result) => {
+        const currentTimestamp = !!result[TIMESTAMP_KEY];
+        chkTimestamp.checked = currentTimestamp;
+
+        const currentAllRoles = !!result[ALLROLES_KEY];
+        chkAllRoles.checked = currentAllRoles;
+    });
+
+    // 체크박스 변경 시 저장
+    chkTimestamp.addEventListener("change", () => {
+        const isChecked = chkTimestamp.checked;
+        chrome.storage.local.set({ [TIMESTAMP_KEY]: isChecked }, () => {
+            console.log("날짜/시각 표시 설정:", isChecked);
+        });
+    });
+
+    // (신규) "모든 role 표시" 체크박스 변경 시 저장
+    chkAllRoles.addEventListener("change", () => {
+        const isChecked = chkAllRoles.checked;
+        chrome.storage.local.set({ [ALLROLES_KEY]: isChecked }, () => {
+            console.log("모든 role 표시 설정:", isChecked);
+        });
+    });
 
     exportBtn.addEventListener("click", () => {
         console.log("popup.js: '대화 저장' 버튼 클릭됨.");
 
-        // 현재 활성 탭 찾기
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             const activeTabId = tabs[0].id;
-            // content-script.js로 메시지 전송
-            chrome.tabs.sendMessage(activeTabId, { type: "REQUEST_EXPORT" }, (response) => {
-                console.log("popup.js: content-script 응답:", response);
-                if (!response) {
-                    console.log("popup.js: 응답이 없거나 오류가 발생함.");
-                } else {
-                    if (response.success) {
-                        console.log("popup.js: 대화 저장 성공:", response.msg);
-                    } else {
-                        console.error("popup.js: 대화 저장 실패:", response.msg);
+            // TIMESTAMP_KEY, ALLROLES_KEY 모두 가져오기
+            chrome.storage.local.get([TIMESTAMP_KEY, ALLROLES_KEY], (res) => {
+                const showTimestamp = !!res[TIMESTAMP_KEY];
+                const allRoles = !!res[ALLROLES_KEY];
+                // 두 옵션을 함께 메시지로 넘김
+                chrome.tabs.sendMessage(
+                    activeTabId,
+                    {
+                        type: "REQUEST_EXPORT",
+                        data: {
+                            showTimestamp, // true/false
+                            allRoles       // true/false
+                        }
+                    },
+                    (response) => {
+                        console.log("popup.js: content-script 응답:", response);
                     }
-                }
+                );
             });
         });
     });

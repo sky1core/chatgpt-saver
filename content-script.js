@@ -3,7 +3,7 @@
  * chatgpt.com 도메인에 주입되어,
  * 1) URL에서 conversation_id 추출
  * 2) 세션 토큰 가져오기 -> API로 대화내용 (JSON) 받아오기
- * 3) JSON -> Markdown 변환
+ * 3) JSON -> Markdown 변환 (메시지 날짜/시간 포함)
  * 4) 백그라운드에 blobUrl, fileName 보내 다운로드
  */
 
@@ -11,7 +11,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "REQUEST_EXPORT") {
         console.log("content-script: REQUEST_EXPORT 메시지 수신 -> 대화 저장 시도 시작...");
 
-        exportConversationAsMarkdown()
+        const showTimestamp = message.data?.showTimestamp || false;
+        const allRoles = message.data?.allRoles || false;
+
+        exportConversationAsMarkdown({ showTimestamp, allRoles })
             .then(() => {
                 sendResponse({ success: true, msg: "Markdown 저장 완료" });
             })
@@ -19,8 +22,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 sendResponse({ success: false, msg: err.message });
             });
 
-        // 비동기 응답
-        return true;
+        return true; // 비동기 응답
     }
 });
 
@@ -29,7 +31,9 @@ function sanitizeFileName(name) {
     return name.replace(/[\\/:*?"<>|]/g, "_");
 }
 
-async function exportConversationAsMarkdown() {
+async function exportConversationAsMarkdown(options = {}) {
+    const { showTimestamp = false, allRoles = false } = options;
+
     try {
         logDebug("exportConversationAsMarkdown() 호출됨");
 
@@ -48,8 +52,8 @@ async function exportConversationAsMarkdown() {
         const conversationData = await fetchConversationData(conversationId, token);
         logDebug("대화 JSON 일부:", JSON.stringify(conversationData).slice(0, 200));
 
-        // (D) JSON -> Markdown 변환
-        const mdContent = convertJsonToMarkdown(conversationData);
+        // (D) JSON -> Markdown 변환 (메시지 날짜/시간 포함)
+        const mdContent = convertJsonToMarkdown(conversationData, { showTimestamp, allRoles });
         logDebug(`Markdown 변환 결과 길이: ${mdContent.length}`);
 
         // (E) Blob URL 생성 후, 백그라운드에 다운로드 요청
@@ -120,14 +124,51 @@ async function fetchConversationData(conversationId, token) {
     return await resp.json();
 }
 
-/* ---------- (D) JSON -> Markdown ---------- */
-function convertJsonToMarkdown(conversationData) {
-    // 질문에서 보여준 response data를 가정해 mapping 순회
-    const { mapping, title } = conversationData;
+/* ---------- (D) JSON -> Markdown (메시지 날짜/시간 포함) ---------- */
+function convertJsonToMarkdown(conversationData, opts = {}) {
+    const { mapping } = conversationData;
     if (!mapping) {
-        throw new Error("대화 데이터에 mapping이 없습니다 (response 구조 확인).");
+        throw new Error("대화 데이터에 mapping이 없습니다.");
     }
-    let mdLines = [];
+    const { showTimestamp = false, allRoles = false } = opts;
+
+    let lines = [];
+
+    function escapeHtml(str) {
+        return str
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    }
+
+    function addMessageLine(roleLabel, timeString, text) {
+        // showTimestamp = true 이고 timeString이 있으면 [시각]을 표시
+        if (showTimestamp && timeString) {
+            lines.push(`### ${roleLabel} [${timeString}]`);
+        } else {
+            lines.push(`### ${roleLabel}`);
+        }
+
+        // roleLabel이 "USER"면 ``` 코드 블록으로 감싸기
+        if (roleLabel === "USER") {
+            lines.push("```"); // 코드 블록 시작
+            text.split("\n").forEach((line) => {
+                lines.push(line);
+            });
+            lines.push("```"); // 코드 블록 종료
+        } else if (roleLabel === "ASSISTANT") {
+            // 나머지 경우는 기존처럼 줄마다 추가
+            text.split("\n").forEach((line) => {
+                lines.push(line);
+            });
+        } else {
+            text.split("\n").forEach((line) => {
+                lines.push(`> ${line}`);
+            });
+        }
+
+        lines.push("\n---\n");
+    }
 
     function traverse(nodeId) {
         const node = mapping[nodeId];
@@ -137,28 +178,36 @@ function convertJsonToMarkdown(conversationData) {
         if (msg) {
             const role = msg.author?.role || "unknown";
             const parts = msg.content?.parts || [];
+            const createTime = msg.create_time;
 
-            // parts 모두가 빈 문자열인지 확인
-            const joinedParts = parts.join("").trim();
-            if (joinedParts.length > 0) {
-                // 의미 있는 텍스트가 있다면, role 표시 + 텍스트 추가
-                if (role === "user") {
-                    mdLines.push("**User:**");
-                } else if (role === "assistant") {
-                    mdLines.push("**ChatGPT:**");
+            // (1) allRoles=false이면 user/assistant가 아닌 건 생략
+            let canAdd = true;
+            if (!allRoles && role !== "user" && role !== "assistant") {
+                canAdd = false;
+            }
+
+            if (canAdd) {
+                // (2) role이 user/assistant면 그대로, 아니면 괄호
+                let roleLabel;
+                if (role === "user" || role === "assistant") {
+                    roleLabel = role;
                 } else {
-                    mdLines.push(`**${role}**:`);
+                    roleLabel = `(${role})`;
                 }
 
-                // 메시지 본문 추가
-                parts.forEach((p) => {
-                    // 혹시 p가 공백만 있으면 .trim()으로 제거 가능
-                    if (p.trim().length > 0) {
-                        mdLines.push(p);
-                    }
-                });
+                roleLabel = roleLabel.toUpperCase();
 
-                mdLines.push("\n---\n");
+                // (3) message 본문
+                const joinedParts = parts.join("\n").trim();
+                if (joinedParts.length > 0) {
+                    let timeString = null;
+                    if (createTime) {
+                        // 원하는 형식으로 바꿔도 됨
+                        const dateObj = new Date(createTime * 1000);
+                        timeString = dateObj.toLocaleString();
+                    }
+                    addMessageLine(roleLabel, timeString, joinedParts);
+                }
             }
         }
 
@@ -167,6 +216,7 @@ function convertJsonToMarkdown(conversationData) {
         }
     }
 
+    // 트리 구조 순회
     let rootId = findRootId(mapping);
     if (!rootId) {
         // fallback: 첫 키
@@ -174,7 +224,8 @@ function convertJsonToMarkdown(conversationData) {
     }
     traverse(rootId);
 
-    return mdLines.join("\n");
+    // 하나의 문자열로 합침
+    return lines.join("\n");
 }
 
 function findRootId(mapping) {
