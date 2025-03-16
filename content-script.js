@@ -103,12 +103,9 @@ async function exportConversationAsMarkdown(options = {}) {
 function getConversationIdFromUrl() {
     try {
         const url = new URL(window.location.href);
-        // 예: /c/67d61e3e-4e2c-800a-8b60-e787700aceff
-        const pathParts = url.pathname.split("/");
-        if (pathParts.length >= 3 && pathParts[1] === "c") {
-            return pathParts[2];
-        }
-        return null;
+        // 빈 문자열 제거 후 마지막 요소 반환
+        const pathParts = url.pathname.split("/").filter(Boolean);
+        return pathParts[pathParts.length - 1] || null;
     } catch (e) {
         return null;
     }
