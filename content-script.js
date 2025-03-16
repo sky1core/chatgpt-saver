@@ -24,6 +24,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 });
 
+function sanitizeFileName(name) {
+    // 간단 예시: /나 ? 같은 특수문자를 _ 등으로 대체
+    return name.replace(/[\\/:*?"<>|]/g, "_");
+}
+
 async function exportConversationAsMarkdown() {
     try {
         logDebug("exportConversationAsMarkdown() 호출됨");
@@ -48,7 +53,21 @@ async function exportConversationAsMarkdown() {
         logDebug(`Markdown 변환 결과 길이: ${mdContent.length}`);
 
         // (E) Blob URL 생성 후, 백그라운드에 다운로드 요청
-        downloadViaBackground(mdContent, `chatgpt_conversation_${conversationId}.md`);
+        let safeTitle = null;
+        if (conversationData.title && conversationData.title.trim().length > 0) {
+            // 파일명에 문제될 수 있는 문자 치환
+            safeTitle = sanitizeFileName(conversationData.title.trim());
+            // 너무 긴 제목 방지(선택 사항)
+            if (safeTitle.length > 60) {
+                safeTitle = safeTitle.slice(0, 60) + "...";
+            }
+        }
+
+        const fileName = safeTitle
+            ? `chatgpt_${safeTitle}.md`
+            : `chatgpt_conversation_${conversationId}.md`;
+
+        downloadViaBackground(mdContent, fileName);
 
         logDebug("exportConversationAsMarkdown() 완료");
     } catch (err) {
