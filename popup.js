@@ -54,6 +54,10 @@ document.addEventListener("DOMContentLoaded", () => {
                         }
                     },
                     (response) => {
+                        if (chrome.runtime.lastError) {
+                            alert("페이지를 새로고침한 뒤 다시 시도해주세요.\n오류: " + chrome.runtime.lastError.message);
+                            return;
+                        }
                         console.log("popup.js: content-script 응답:", response);
                     }
                 );

@@ -1,12 +1,13 @@
 /*************************************
  * content-script.js
- * chatgpt.com 도메인에 주입되어:
- * 1) URL에서 conversation_id 추출
- * 2) 세션 토큰 가져오기 -> API로 대화내용(JSON) 받아오기
- * 3) JSON -> Markdown 변환
- * 4) 백그라운드에 blobUrl, fileName 보내 다운로드
+ *
+ * 기존 대화 메시지도 저장 + 캔버스(코드 블록)도 저장
  *************************************/
 
+// 하나의 'canvas' 문서만 있다고 가정, 그 전체 텍스트를 관리하는 전역
+let canvasText = "";
+
+// 메시지를 저장할 때, 코드 블록이 아니면 단순히 msg.content.parts.join("\n")를 넣도록
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "REQUEST_EXPORT") {
         console.log("content-script: REQUEST_EXPORT 메시지 수신 -> 대화 저장 시도 시작...");
@@ -57,7 +58,7 @@ async function exportConversationAsMarkdown(options = {}) {
         const conversationData = await fetchConversationData(conversationId, token);
         logDebug("대화 JSON 일부:", JSON.stringify(conversationData).slice(0, 200));
 
-        // (D) JSON -> Markdown 변환 (메시지 날짜/시간 포함)
+        // (D) JSON -> Markdown 변환
         const mdContent = convertJsonToMarkdown(conversationData, { showTimestamp, allRoles });
         logDebug(`Markdown 변환 결과 길이: ${mdContent.length}`);
 
@@ -135,7 +136,7 @@ async function fetchConversationData(conversationId, token) {
 }
 
 /**
- * JSON -> Markdown 변환 (메시지 날짜/시간 포함)
+ * JSON -> Markdown 변환
  */
 function convertJsonToMarkdown(conversationData, opts = {}) {
     const { title, create_time, update_time, mapping } = conversationData;
@@ -146,11 +147,10 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
     const { showTimestamp = false, allRoles = false } = opts;
     let lines = [];
 
-    // 문서 제목
+    // (1) 문서 제목/시간
     const docTitle = title ? title.trim() : "제목 없음";
     lines.push(`# ${docTitle}`);
 
-    // 생성/수정일시를 각각 가져오기
     let createdStr = "";
     if (typeof create_time === "number") {
         const createdDate = new Date(create_time * 1000);
@@ -163,7 +163,6 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
         updatedStr = updatedDate.toLocaleString();
     }
 
-    // "생성일시: ... / 수정일시: ..." 형태로 합침
     const timeTexts = [];
     if (createdStr) {
         timeTexts.push(`생성일시: ${createdStr}`);
@@ -177,7 +176,7 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
         lines.push("");
     }
 
-    // 메시지 출력용 함수
+    // (2) 메시지 표시 함수
     function addMessageLine(roleLabel, timeString, text) {
         lines.push(`### ${roleLabel}`);
         if (showTimestamp && timeString) {
@@ -185,28 +184,30 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
             lines.push("");
         }
 
-        // USER 역할 -> 코드 블록
+        // USER → 코드 블록
         if (roleLabel === "USER") {
             lines.push("```");
             text.split("\n").forEach((line) => {
                 lines.push(line);
             });
             lines.push("```");
-        } else if (roleLabel === "ASSISTANT") {
-            // ASSISTANT면 그대로 출력
+        }
+        // ASSISTANT → 그냥 텍스트
+        else if (roleLabel === "ASSISTANT") {
             text.split("\n").forEach((line) => {
                 lines.push(line);
             });
-        } else {
-            // 그 외 role -> 인용 블록
+        }
+        // 그 외 → 그대로 출력
+        else {
             text.split("\n").forEach((line) => {
-                lines.push(`> ${line}`);
+                lines.push(line);
             });
         }
         lines.push("\n---\n");
     }
 
-    // 트리 구조 순회
+    // (3) 트리 구조 순회
     function traverse(nodeId) {
         const node = mapping[nodeId];
         if (!node) return;
@@ -214,39 +215,100 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
         const msg = node.message;
         if (msg) {
             const role = msg.author?.role || "unknown";
-            const parts = msg.content?.parts || [];
-            const createTime = msg.create_time;
+            const contentType = msg.content?.content_type;
+            let messageText = "";
 
+            // code 타입이면 JSON 파싱 & updates 적용 (캔버스 관련)
+            if (contentType === "code" && typeof msg.content.text === "string") {
+                let codeObj;
+                try {
+                    codeObj = JSON.parse(msg.content.text);
+                } catch (err) {
+                    console.error("[convertJsonToMarkdown] code block JSON 파싱 실패:", err);
+                    // 실패 시 원본 그대로
+                    messageText = msg.content.text;
+                }
+
+                if (codeObj && typeof codeObj === "object") {
+                    // codeObj.content or codeObj.text → canvasText에 덮어씀
+                    if (typeof codeObj.content === "string" && codeObj.content.trim().length > 0) {
+                        canvasText = codeObj.content;
+                    } else if (
+                        typeof codeObj.text === "string" &&
+                        codeObj.text.trim().length > 0
+                    ) {
+                        canvasText = codeObj.text;
+                    }
+
+                    // updates 있으면 치환
+                    if (Array.isArray(codeObj.updates)) {
+                        applyUpdatesToCanvasText(codeObj.updates);
+                    }
+
+                    // 최종 결과
+                    messageText = canvasText;
+                    console.log("[convertJsonToMarkdown] code block updated text:", messageText);
+
+                    // 인용 블록 변환
+                    if (messageText) {
+                        const linesQuoted = messageText
+                            .split("\n")
+                            .map((line) => `> ${line}`)
+                            .join("\n");
+                        messageText = linesQuoted;
+                    }
+                } else {
+                    // codeObj가 없거나 JSON 아님 → 원본 텍스트 사용
+                    messageText = msg.content.text;
+                }
+            }
+            // 일반 텍스트(기존 대화)인 경우
+            else {
+                // msg.content.parts → joined string
+                if (Array.isArray(msg.content?.parts)) {
+                    // 여러 줄이면 \n 으로 합침
+                    messageText = msg.content.parts.join("\n");
+                } else {
+                    messageText = "";
+                }
+            }
+
+            // (4) 메시지 표시 여부
             let canAdd = true;
             if (!allRoles && role !== "user" && role !== "assistant") {
                 canAdd = false;
             }
 
             if (canAdd) {
-                let roleLabel;
-                if (role === "user" || role === "assistant") {
-                    roleLabel = role;
-                } else {
-                    roleLabel = `(${role})`;
-                }
-
+                let roleLabel = role === "user" || role === "assistant" ? role : `(${role})`;
                 roleLabel = roleLabel.toUpperCase();
 
-                const joinedParts = parts.join("\n").trim();
-                if (joinedParts.length > 0) {
+                const joinedText = messageText.trim();
+                if (joinedText.length > 0) {
                     let timeString = null;
-                    if (createTime) {
-                        const dateObj = new Date(createTime * 1000);
+                    if (msg.create_time) {
+                        const dateObj = new Date(msg.create_time * 1000);
                         timeString = dateObj.toLocaleString();
                     }
-                    addMessageLine(roleLabel, timeString, joinedParts);
+                    addMessageLine(roleLabel, timeString, joinedText);
                 }
             }
         }
 
+        // 자식 노드 재귀
         if (node.children) {
             node.children.forEach((childId) => traverse(childId));
         }
+    }
+
+    // 루트 노드 찾아 순회
+    function findRootId(mapping) {
+        for (const key in mapping) {
+            if (!mapping[key].parent) {
+                return key;
+            }
+        }
+        return null;
     }
 
     let rootId = findRootId(mapping);
@@ -259,15 +321,29 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
 }
 
 /**
- * 루트 노드 찾기
+ * 실제 canvasText에 부분 치환을 적용 (dotAll + optional global)
  */
-function findRootId(mapping) {
-    for (const key in mapping) {
-        if (!mapping[key].parent) {
-            return key;
-        }
+function applyUpdatesToCanvasText(updates) {
+    console.log("[applyUpdatesToCanvasText] initial text:\n", canvasText);
+
+    for (const update of updates) {
+        const pattern = update.pattern || ".*";
+        const flags = update.multiple ? "gs" : "s";  // dotAll + optional global
+        const regex = new RegExp(pattern, flags);
+        const replacement = update.replacement || "";
+
+        console.log("[applyUpdatesToCanvasText] applying update:", {
+            pattern,
+            replacement,
+            flags,
+            oldText: canvasText
+        });
+
+        canvasText = canvasText.replace(regex, replacement);
+        console.log("[applyUpdatesToCanvasText] after update:\n", canvasText);
     }
-    return null;
+
+    console.log("[applyUpdatesToCanvasText] final text:\n", canvasText);
 }
 
 /**
