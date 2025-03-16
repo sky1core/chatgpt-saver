@@ -1,16 +1,16 @@
 // background.js (Manifest V3 service worker)
-// 아래 로직을 추가: content script에서 메시지로 넘긴 blobUrl, fileName을 이용하여 다운로드
+// content script 쪽에서 blobUrl, fileName을 넘겨주면 다운로드를 처리하는 코드
 
 chrome.runtime.onInstalled.addListener((details) => {
     if (details.reason === "install") {
-        console.log("ChatGPT Markdown Exporter가 새로 설치되었습니다.");
+        console.log("ChatGPT Saver가 새로 설치되었습니다.");
     } else if (details.reason === "update") {
-        console.log("ChatGPT Markdown Exporter가 업데이트되었습니다.");
+        console.log("ChatGPT Saver가 업데이트되었습니다.");
     }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // 기존 LOG/ERROR 처리
+    // 기존 LOG / ERROR 처리
     if (message.type === "LOG") {
         console.log("[ContentScript LOG]:", message.payload);
         sendResponse && sendResponse({ ok: true });
@@ -21,7 +21,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
     }
 
-    // 새로 추가: REQUEST_DOWNLOAD 처리
+    // REQUEST_DOWNLOAD 처리
     if (message.type === "REQUEST_DOWNLOAD") {
         const { blobUrl, fileName } = message.data || {};
         if (!blobUrl || !fileName) {
@@ -30,6 +30,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return;
         }
 
+        // chrome.downloads.download 호출
         chrome.downloads.download(
             {
                 url: blobUrl,

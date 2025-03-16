@@ -1,5 +1,5 @@
 {
-  "name": "ChatGPT Markdown Exporter",
+  "name": "ChatGPT Saver",
   "version": "1.0.0",
   "manifest_version": 3,
   "description": "ChatGPT 대화를 마크다운 파일로 다운로드합니다.",

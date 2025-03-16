@@ -1,11 +1,11 @@
-// content-script.js
-/**
- * chatgpt.com 도메인에 주입되어,
+/*************************************
+ * content-script.js
+ * chatgpt.com 도메인에 주입되어:
  * 1) URL에서 conversation_id 추출
- * 2) 세션 토큰 가져오기 -> API로 대화내용 (JSON) 받아오기
- * 3) JSON -> Markdown 변환 (메시지 날짜/시간 포함)
+ * 2) 세션 토큰 가져오기 -> API로 대화내용(JSON) 받아오기
+ * 3) JSON -> Markdown 변환
  * 4) 백그라운드에 blobUrl, fileName 보내 다운로드
- */
+ *************************************/
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "REQUEST_EXPORT") {
@@ -22,15 +22,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 sendResponse({ success: false, msg: err.message });
             });
 
-        return true; // 비동기 응답
+        return true; // 비동기 응답을 위한 return
     }
 });
 
+/**
+ * 파일명에서 불가한 문자를 치환
+ */
 function sanitizeFileName(name) {
-    // 간단 예시: /나 ? 같은 특수문자를 _ 등으로 대체
     return name.replace(/[\\/:*?"<>|]/g, "_");
 }
 
+/**
+ * 대화(Conversation)를 Markdown으로 변환 후 다운로드
+ */
 async function exportConversationAsMarkdown(options = {}) {
     const { showTimestamp = false, allRoles = false } = options;
 
@@ -56,12 +61,10 @@ async function exportConversationAsMarkdown(options = {}) {
         const mdContent = convertJsonToMarkdown(conversationData, { showTimestamp, allRoles });
         logDebug(`Markdown 변환 결과 길이: ${mdContent.length}`);
 
-        // (E) Blob URL 생성 후, 백그라운드에 다운로드 요청
+        // (E) Blob URL 생성 -> 백그라운드로 다운로드 요청
         let safeTitle = null;
         if (conversationData.title && conversationData.title.trim().length > 0) {
-            // 파일명에 문제될 수 있는 문자 치환
             safeTitle = sanitizeFileName(conversationData.title.trim());
-            // 너무 긴 제목 방지(선택 사항)
             if (safeTitle.length > 60) {
                 safeTitle = safeTitle.slice(0, 60) + "...";
             }
@@ -80,7 +83,9 @@ async function exportConversationAsMarkdown(options = {}) {
     }
 }
 
-/* ---------- (A) URL에서 conversationId 추출 ---------- */
+/**
+ * URL에서 /c/ 형식으로 conversationId 추출
+ */
 function getConversationIdFromUrl() {
     try {
         const url = new URL(window.location.href);
@@ -95,12 +100,15 @@ function getConversationIdFromUrl() {
     }
 }
 
-/* ---------- (B) 세션 토큰 가져오기 ---------- */
+/**
+ * 세션 토큰 가져오기
+ */
 async function getChatGPTAccessToken() {
     const resp = await fetch("https://chatgpt.com/api/auth/session", { method: "GET" });
     if (!resp.ok) {
         throw new Error(`세션 정보를 가져오지 못함: ${resp.status} ${resp.statusText}`);
     }
+
     const data = await resp.json();
     if (!data || !data.accessToken) {
         throw new Error("로그인 토큰이 없습니다 (로그인 상태 확인 요망).");
@@ -108,7 +116,9 @@ async function getChatGPTAccessToken() {
     return data.accessToken;
 }
 
-/* ---------- (C) 대화 데이터 fetch ---------- */
+/**
+ * 대화 데이터 fetch
+ */
 async function fetchConversationData(conversationId, token) {
     const url = `https://chatgpt.com/backend-api/conversation/${conversationId}`;
     const resp = await fetch(url, {
@@ -124,52 +134,79 @@ async function fetchConversationData(conversationId, token) {
     return await resp.json();
 }
 
-/* ---------- (D) JSON -> Markdown (메시지 날짜/시간 포함) ---------- */
+/**
+ * JSON -> Markdown 변환 (메시지 날짜/시간 포함)
+ */
 function convertJsonToMarkdown(conversationData, opts = {}) {
-    const { mapping } = conversationData;
+    const { title, create_time, update_time, mapping } = conversationData;
     if (!mapping) {
         throw new Error("대화 데이터에 mapping이 없습니다.");
     }
-    const { showTimestamp = false, allRoles = false } = opts;
 
+    const { showTimestamp = false, allRoles = false } = opts;
     let lines = [];
 
-    function escapeHtml(str) {
-        return str
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
+    // 문서 제목
+    const docTitle = title ? title.trim() : "제목 없음";
+    lines.push(`# ${docTitle}`);
+
+    // 생성/수정일시를 각각 가져오기
+    let createdStr = "";
+    if (typeof create_time === "number") {
+        const createdDate = new Date(create_time * 1000);
+        createdStr = createdDate.toLocaleString();
     }
 
+    let updatedStr = "";
+    if (typeof update_time === "number") {
+        const updatedDate = new Date(update_time * 1000);
+        updatedStr = updatedDate.toLocaleString();
+    }
+
+    // "생성일시: ... / 수정일시: ..." 형태로 합침
+    const timeTexts = [];
+    if (createdStr) {
+        timeTexts.push(`생성일시: ${createdStr}`);
+    }
+    if (updatedStr) {
+        timeTexts.push(`수정일시: ${updatedStr}`);
+    }
+
+    if (timeTexts.length > 0) {
+        lines.push(timeTexts.join(" / "));
+        lines.push("");
+    }
+
+    // 메시지 출력용 함수
     function addMessageLine(roleLabel, timeString, text) {
-        // showTimestamp = true 이고 timeString이 있으면 [시각]을 표시
+        lines.push(`### ${roleLabel}`);
         if (showTimestamp && timeString) {
-            lines.push(`### ${roleLabel} [${timeString}]`);
-        } else {
-            lines.push(`### ${roleLabel}`);
+            lines.push(`(${timeString})`);
+            lines.push("");
         }
 
-        // roleLabel이 "USER"면 ``` 코드 블록으로 감싸기
+        // USER 역할 -> 코드 블록
         if (roleLabel === "USER") {
-            lines.push("```"); // 코드 블록 시작
+            lines.push("```");
             text.split("\n").forEach((line) => {
                 lines.push(line);
             });
-            lines.push("```"); // 코드 블록 종료
+            lines.push("```");
         } else if (roleLabel === "ASSISTANT") {
-            // 나머지 경우는 기존처럼 줄마다 추가
+            // ASSISTANT면 그대로 출력
             text.split("\n").forEach((line) => {
                 lines.push(line);
             });
         } else {
+            // 그 외 role -> 인용 블록
             text.split("\n").forEach((line) => {
                 lines.push(`> ${line}`);
             });
         }
-
         lines.push("\n---\n");
     }
 
+    // 트리 구조 순회
     function traverse(nodeId) {
         const node = mapping[nodeId];
         if (!node) return;
@@ -180,14 +217,12 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
             const parts = msg.content?.parts || [];
             const createTime = msg.create_time;
 
-            // (1) allRoles=false이면 user/assistant가 아닌 건 생략
             let canAdd = true;
             if (!allRoles && role !== "user" && role !== "assistant") {
                 canAdd = false;
             }
 
             if (canAdd) {
-                // (2) role이 user/assistant면 그대로, 아니면 괄호
                 let roleLabel;
                 if (role === "user" || role === "assistant") {
                     roleLabel = role;
@@ -197,12 +232,10 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
 
                 roleLabel = roleLabel.toUpperCase();
 
-                // (3) message 본문
                 const joinedParts = parts.join("\n").trim();
                 if (joinedParts.length > 0) {
                     let timeString = null;
                     if (createTime) {
-                        // 원하는 형식으로 바꿔도 됨
                         const dateObj = new Date(createTime * 1000);
                         timeString = dateObj.toLocaleString();
                     }
@@ -212,22 +245,22 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
         }
 
         if (node.children) {
-            node.children.forEach(childId => traverse(childId));
+            node.children.forEach((childId) => traverse(childId));
         }
     }
 
-    // 트리 구조 순회
     let rootId = findRootId(mapping);
     if (!rootId) {
-        // fallback: 첫 키
         rootId = Object.keys(mapping)[0];
     }
     traverse(rootId);
 
-    // 하나의 문자열로 합침
     return lines.join("\n");
 }
 
+/**
+ * 루트 노드 찾기
+ */
 function findRootId(mapping) {
     for (const key in mapping) {
         if (!mapping[key].parent) {
@@ -237,17 +270,15 @@ function findRootId(mapping) {
     return null;
 }
 
-/* ---------- (E) Blob URL -> 백그라운드에 다운로드 요청 ---------- */
+/**
+ * Blob URL -> 백그라운드에서 다운로드 처리
+ */
 function downloadViaBackground(mdContent, fileName) {
     const blob = new Blob([mdContent], { type: "text/markdown" });
     const blobUrl = URL.createObjectURL(blob);
 
-    // background.js로 메시지 전송
     chrome.runtime.sendMessage(
-        {
-            type: "REQUEST_DOWNLOAD",
-            data: { blobUrl, fileName }
-        },
+        { type: "REQUEST_DOWNLOAD", data: { blobUrl, fileName } },
         (res) => {
             if (!res || !res.ok) {
                 logError("백그라운드 다운로드 실패", res?.error || "");
@@ -258,7 +289,9 @@ function downloadViaBackground(mdContent, fileName) {
     );
 }
 
-/* ---------- 디버깅 로깅 함수들 ---------- */
+/**
+ * 디버깅 로그 함수들
+ */
 function logDebug(...args) {
     console.log("[content-script DEBUG]", ...args);
     chrome.runtime.sendMessage({ type: "LOG", payload: args.join(" ") });
