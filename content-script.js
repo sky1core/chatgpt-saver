@@ -4,8 +4,21 @@
  * 기존 대화 메시지도 저장 + 캔버스(코드 블록)도 저장
  *************************************/
 
-// 하나의 'canvas' 문서만 있다고 가정, 그 전체 텍스트를 관리하는 전역
-let canvasText = "";
+// 전역 변수
+let pendingCanvasUpdate = null;
+// 여러 canvas를 키(textdoc_id)로 구분하여 관리
+let canvasTexts = {};
+
+function getCanvasText(docId) {
+    if (!canvasTexts[docId]) {
+        canvasTexts[docId] = "";
+    }
+    return canvasTexts[docId];
+}
+
+function setCanvasText(docId, newText) {
+    canvasTexts[docId] = newText;
+}
 
 // 메시지를 저장할 때, 코드 블록이 아니면 단순히 msg.content.parts.join("\n")를 넣도록
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -184,7 +197,7 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
             lines.push("");
         }
 
-        // USER → 코드 블록
+        // user → 코드 블록
         if (roleLabel === "USER") {
             lines.push("```");
             text.split("\n").forEach((line) => {
@@ -192,7 +205,7 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
             });
             lines.push("```");
         }
-        // ASSISTANT → 그냥 텍스트
+        // assistant → 그냥 텍스트
         else if (roleLabel === "ASSISTANT") {
             text.split("\n").forEach((line) => {
                 lines.push(line);
@@ -216,57 +229,48 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
         if (msg) {
             const role = msg.author?.role || "unknown";
             const contentType = msg.content?.content_type;
+
             let messageText = "";
 
-            // code 타입이면 JSON 파싱 & updates 적용 (캔버스 관련)
-            if (contentType === "code" && typeof msg.content.text === "string") {
-                let codeObj;
+            if (role === "assistant" && contentType === "code" && typeof msg.content.text === "string") {
+                // Assistant 메시지: 새 캔버스 텍스트(JSON)를 pending 상태로 저장하고, 바로 출력하지 않음
                 try {
-                    codeObj = JSON.parse(msg.content.text);
+                    const codeObj = JSON.parse(msg.content.text);
+                    pendingCanvasUpdate = codeObj;
+                    messageText = ""; // pending 상태이므로 빈 문자열 처리
                 } catch (err) {
-                    console.error("[convertJsonToMarkdown] code block JSON 파싱 실패:", err);
-                    // 실패 시 원본 그대로
+                    console.error("JSON parse error (assistant):", err);
+                    pendingCanvasUpdate = null;
                     messageText = msg.content.text;
                 }
-
-                if (codeObj && typeof codeObj === "object") {
-                    // codeObj.content or codeObj.text → canvasText에 덮어씀
-                    if (typeof codeObj.content === "string" && codeObj.content.trim().length > 0) {
-                        canvasText = codeObj.content;
-                    } else if (
-                        typeof codeObj.text === "string" &&
-                        codeObj.text.trim().length > 0
-                    ) {
-                        canvasText = codeObj.text;
+            } else if (role === "tool" && msg.metadata?.canvas?.textdoc_id) {
+                // Tool 메시지: doc_id가 존재하면, pending 상태의 업데이트를 적용
+                const realDocId = msg.metadata.canvas.textdoc_id;
+                if (realDocId && pendingCanvasUpdate) {
+                    try {
+                        if (typeof pendingCanvasUpdate.content === "string") {
+                            setCanvasText(realDocId, pendingCanvasUpdate.content);
+                        } else if (typeof pendingCanvasUpdate.text === "string") {
+                            setCanvasText(realDocId, pendingCanvasUpdate.text);
+                        }
+                        if (Array.isArray(pendingCanvasUpdate.updates)) {
+                            applyUpdatesToCanvasText(realDocId, pendingCanvasUpdate.updates);
+                        }
+                        // 업데이트된 캔버스 텍스트를 먼저 출력
+                        const updatedText = getCanvasText(realDocId);
+                        addMessageLine("ASSISTANT", null, updatedText);
+                    } catch (e) {
+                        console.error("Error applying pending update:", e);
                     }
-
-                    // updates 있으면 치환
-                    if (Array.isArray(codeObj.updates)) {
-                        applyUpdatesToCanvasText(codeObj.updates);
-                    }
-
-                    // 최종 결과
-                    messageText = canvasText;
-                    console.log("[convertJsonToMarkdown] code block updated text:", messageText);
-
-                    // 인용 블록 변환
-                    if (messageText) {
-                        const linesQuoted = messageText
-                            .split("\n")
-                            .map((line) => `> ${line}`)
-                            .join("\n");
-                        messageText = linesQuoted;
-                    }
-                } else {
-                    // codeObj가 없거나 JSON 아님 → 원본 텍스트 사용
-                    messageText = msg.content.text;
+                    pendingCanvasUpdate = null;
                 }
-            }
-            // 일반 텍스트(기존 대화)인 경우
-            else {
-                // msg.content.parts → joined string
-                if (Array.isArray(msg.content?.parts)) {
-                    // 여러 줄이면 \n 으로 합침
+                // doc_id 처리한 메세지는 패스
+                messageText = "";
+            } else {
+                // 그 외 메시지 처리 (일반 텍스트 등)
+                if (typeof msg.content.text === "string") {
+                    messageText = msg.content.text;
+                } else if (Array.isArray(msg.content?.parts)) {
                     messageText = msg.content.parts.join("\n");
                 } else {
                     messageText = "";
@@ -280,8 +284,15 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
             }
 
             if (canAdd) {
-                let roleLabel = role === "user" || role === "assistant" ? role : `(${role})`;
-                roleLabel = roleLabel.toUpperCase();
+                let roleLabel = role.toUpperCase();
+                if (role !== "user" && role !== "assistant") {
+                    // tool/system => (TOOL) / (SYSTEM)
+                    roleLabel = `(${role})`.toUpperCase();
+                }
+
+                if (!messageText) {
+                    console.log("no message text", msg);
+                }
 
                 const joinedText = messageText.trim();
                 if (joinedText.length > 0) {
@@ -323,12 +334,13 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
 /**
  * 실제 canvasText에 부분 치환을 적용 (dotAll + optional global)
  */
-function applyUpdatesToCanvasText(updates) {
-    console.log("[applyUpdatesToCanvasText] initial text:\n", canvasText);
+function applyUpdatesToCanvasText(docId, updates) {
+    let currentText = getCanvasText(docId);
+    console.log("[applyUpdatesToCanvasText] initial text:\n", currentText);
 
     for (const update of updates) {
         const pattern = update.pattern || ".*";
-        const flags = update.multiple ? "gs" : "s";  // dotAll + optional global
+        const flags = update.multiple ? "gs" : "s"; // dotAll + optional global
         const regex = new RegExp(pattern, flags);
         const replacement = update.replacement || "";
 
@@ -336,14 +348,15 @@ function applyUpdatesToCanvasText(updates) {
             pattern,
             replacement,
             flags,
-            oldText: canvasText
+            oldText: currentText
         });
 
-        canvasText = canvasText.replace(regex, replacement);
-        console.log("[applyUpdatesToCanvasText] after update:\n", canvasText);
+        currentText = currentText.replace(regex, replacement);
+        console.log("[applyUpdatesToCanvasText] after update:\n", currentText);
     }
 
-    console.log("[applyUpdatesToCanvasText] final text:\n", canvasText);
+    setCanvasText(docId, currentText);
+    console.log("[applyUpdatesToCanvasText] final text:\n", currentText);
 }
 
 /**
