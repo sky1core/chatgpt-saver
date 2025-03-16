@@ -1,0 +1,25 @@
+{
+  "name": "ChatGPT Markdown Exporter",
+  "version": "1.0.0",
+  "manifest_version": 3,
+  "description": "ChatGPT 대화를 마크다운 파일로 다운로드합니다.",
+  "permissions": [
+    "downloads",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content-script.js"]
+    }
+  ]
+}
