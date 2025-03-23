@@ -259,33 +259,32 @@ async function convertJsonToMarkdown(conversationData, opts = {}) {
     }
 
     // (2) 메시지 표시 함수
-    function addMessageLine(roleLabel, timeString, text) {
-        lines.push(`### ${roleLabel}`);
-        if (showTimestamp && timeString) {
-            lines.push(`(${timeString})`);
-            lines.push("");
+    function addMessageLine(role, timeString, text) {
+
+        let roleLabel;
+        if (role === "user") {
+            roleLabel = "USER";
+        } else if (role === "assistant") {
+            roleLabel = "ASSISTANT";
+        } else {
+            roleLabel = `(${role})`.toUpperCase();
         }
 
-        // user → 코드 블록
-        if (roleLabel === "USER") {
+        lines.push(`### ${roleLabel}`);
+        if (showTimestamp && timeString) {
+            lines.push(`(${timeString})\n`);
+        }
+
+        if (role === "user") {
+            // user → 코드 블록
             lines.push("```");
-            text.split("\n").forEach((line) => {
-                lines.push(line);
-            });
+            text.split("\n").forEach((line) => lines.push(line));
             lines.push("```");
+        } else {
+            // assistant, tool, system 등 → 동일 텍스트 처리
+            text.split("\n").forEach((line) => lines.push(line));
         }
-        // assistant → 그냥 텍스트
-        else if (roleLabel === "ASSISTANT") {
-            text.split("\n").forEach((line) => {
-                lines.push(line);
-            });
-        }
-        // 그 외 → 그대로 출력
-        else {
-            text.split("\n").forEach((line) => {
-                lines.push(line);
-            });
-        }
+
         lines.push("\n---\n");
     }
 
@@ -414,12 +413,6 @@ async function convertJsonToMarkdown(conversationData, opts = {}) {
             }
 
             if (canAdd) {
-                let roleLabel = role.toUpperCase();
-                if (role !== "user" && role !== "assistant") {
-                    // tool/system => (TOOL) / (SYSTEM)
-                    roleLabel = `(${role})`.toUpperCase();
-                }
-
                 if (!messageText) {
                     console.log("no message text", msg);
                 }
@@ -427,7 +420,7 @@ async function convertJsonToMarkdown(conversationData, opts = {}) {
                 const joinedText = messageText.trim();
                 if (joinedText.length > 0) {
                     let timeString = msg.create_time ? formatLocalDateTime(msg.create_time) : null;
-                    addMessageLine(roleLabel, timeString, joinedText);
+                    addMessageLine(role, timeString, joinedText);
                 }
             }
         }
