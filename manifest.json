@@ -1,6 +1,6 @@
 {
   "name": "ChatGPT Saver",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "manifest_version": 3,
   "description": "ChatGPT 대화를 마크다운 파일로 다운로드합니다.",
   "permissions": [
