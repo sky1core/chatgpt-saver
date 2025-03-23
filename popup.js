@@ -4,6 +4,21 @@ const TIMESTAMP_KEY = "showTimestamp";
 const ALLROLES_KEY = "showAllRoles";
 const SHOWIMAGEPROMPT_KEY = "showImagePrompt";
 
+function bindCheckboxToStorage(checkboxEl, storageKey, logLabel) {
+  // 초기 상태 로딩
+  chrome.storage.local.get([storageKey], (res) => {
+    checkboxEl.checked = !!res[storageKey];
+  });
+
+  // 변경 시 저장
+  checkboxEl.addEventListener("change", () => {
+    const isChecked = checkboxEl.checked;
+    chrome.storage.local.set({ [storageKey]: isChecked }, () => {
+      console.log(`${logLabel} 설정:`, isChecked);
+    });
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     const exportBtn = document.getElementById("exportBtn");
     const chkTimestamp = document.getElementById("chkTimestamp");
@@ -24,29 +39,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     });
 
-    // 체크박스 변경 시 저장
-    chkTimestamp.addEventListener("change", () => {
-        const isChecked = chkTimestamp.checked;
-        chrome.storage.local.set({ [TIMESTAMP_KEY]: isChecked }, () => {
-            console.log("날짜/시각 표시 설정:", isChecked);
-        });
-    });
-
-    // 체크박스 변경 시 저장
-    chkAllRoles.addEventListener("change", () => {
-        const isChecked = chkAllRoles.checked;
-        chrome.storage.local.set({ [ALLROLES_KEY]: isChecked }, () => {
-            console.log("모든 role 표시 설정:", isChecked);
-        });
-    });
-
-    // 체크박스 변경 시 저장
-    chkShowImagePrompt.addEventListener("change", () => {
-        const isChecked = chkShowImagePrompt.checked;
-        chrome.storage.local.set({ [SHOWIMAGEPROMPT_KEY]: isChecked }, () => {
-            console.log("이미지 프롬프트 표시 설정:", isChecked);
-        });
-    });
+    bindCheckboxToStorage(chkTimestamp, TIMESTAMP_KEY, "날짜/시각 표시");
+    bindCheckboxToStorage(chkAllRoles, ALLROLES_KEY, "모든 role 표시");
+    bindCheckboxToStorage(chkShowImagePrompt, SHOWIMAGEPROMPT_KEY, "이미지 프롬프트 표시");
 
     exportBtn.addEventListener("click", () => {
         console.log("popup.js: '대화 저장' 버튼 클릭됨.");

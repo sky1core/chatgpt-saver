@@ -134,18 +134,13 @@ async function exportConversationAsMarkdown(options = {}) {
             filesToDownload.push({ blob: img.blob, filename: img.filename });
         }
 
-        // (C) Download them all in a single pass using FileReader and ArrayBuffer
+        // (C) Download them all in a single pass using async/await and Blob.arrayBuffer()
         for (const file of filesToDownload) {
-            const reader = new FileReader();
-
-            reader.onload = function (e) {
-                const arrayBuffer = e.target.result;
-
-                // ArrayBuffer -> Base64 변환
+            try {
+                const arrayBuffer = await file.blob.arrayBuffer();
                 const base64Data = arrayBufferToBase64(arrayBuffer);
                 const dataUrl = `data:${file.blob.type};base64,${base64Data}`;
 
-                // background.js에 Data URL과 파일 이름만 넘김
                 chrome.runtime.sendMessage(
                     {
                         type: "REQUEST_DOWNLOAD",
@@ -162,9 +157,9 @@ async function exportConversationAsMarkdown(options = {}) {
                         }
                     }
                 );
-            };
-
-            reader.readAsArrayBuffer(file.blob);
+            } catch (err) {
+                console.error("다운로드 오류:", err);
+            }
         }
 
 
