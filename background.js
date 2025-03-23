@@ -14,26 +14,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "LOG") {
         console.log("[ContentScript LOG]:", message.payload);
         sendResponse && sendResponse({ ok: true });
-        return;
+        return true; // Keep message channel open (Manifest V3)
     } else if (message.type === "ERROR") {
         console.error("[ContentScript ERROR]:", message.payload);
         sendResponse && sendResponse({ ok: true });
-        return;
+        return true;
     }
 
     // REQUEST_DOWNLOAD 처리
     if (message.type === "REQUEST_DOWNLOAD") {
-        const { blobUrl, fileName } = message.data || {};
-        if (!blobUrl || !fileName) {
+        const { dataUrl, fileName } = message.data || {};
+        if (!dataUrl || !fileName) {
             console.error("REQUEST_DOWNLOAD: 파라미터 부족");
-            sendResponse && sendResponse({ ok: false, error: "blobUrl/fileName 누락" });
-            return;
+            sendResponse && sendResponse({ ok: false, error: "dataUrl/fileName 누락" });
+            return true;
         }
 
-        // chrome.downloads.download 호출
+        // dataUrl로 직접 다운로드
         chrome.downloads.download(
             {
-                url: blobUrl,
+                url: dataUrl,
                 filename: fileName,
                 saveAs: false
             },
@@ -48,7 +48,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
         );
 
-        // 비동기 응답
-        return true;
+        return true; // 비동기 응답
     }
 });

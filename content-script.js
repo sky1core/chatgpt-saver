@@ -9,6 +9,12 @@ let pendingCanvasUpdate = null;
 // 여러 canvas를 키(textdoc_id)로 구분하여 관리
 let canvasTexts = {};
 
+function formatLocalDateTime(tsSec) {
+    if (typeof tsSec !== 'number') return '';
+    const d = new Date(tsSec * 1000);
+    return d.toLocaleString();
+}
+
 function getCanvasText(docId) {
     if (!canvasTexts[docId]) {
         canvasTexts[docId] = "";
@@ -27,8 +33,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         const showTimestamp = message.data?.showTimestamp || false;
         const allRoles = message.data?.allRoles || false;
+        const showImagePrompt = message.data?.showImagePrompt || false;
 
-        exportConversationAsMarkdown({ showTimestamp, allRoles })
+        exportConversationAsMarkdown({ showTimestamp, allRoles, showImagePrompt })
             .then(() => {
                 sendResponse({ success: true, msg: "Markdown 저장 완료" });
             })
@@ -51,7 +58,20 @@ function sanitizeFileName(name) {
  * 대화(Conversation)를 Markdown으로 변환 후 다운로드
  */
 async function exportConversationAsMarkdown(options = {}) {
-    const { showTimestamp = false, allRoles = false } = options;
+    const { showTimestamp = false, allRoles = false, showImagePrompt = false } = options;
+    console.log('[exportConversationAsMarkdown] Received options:', options);
+
+    // Helper function to format timestamp as YYYYMMDDhhmmss
+    function formatDateTimeForFilename(timestampSec) {
+        const dt = new Date(timestampSec * 1000);
+        const year = dt.getFullYear();
+        const month = String(dt.getMonth() + 1).padStart(2, '0');
+        const day = String(dt.getDate()).padStart(2, '0');
+        const hours = String(dt.getHours()).padStart(2, '0');
+        const minutes = String(dt.getMinutes()).padStart(2, '0');
+        const seconds = String(dt.getSeconds()).padStart(2, '0');
+        return `${year}${month}${day}${hours}${minutes}${seconds}`;
+    }
 
     try {
         logDebug("exportConversationAsMarkdown() 호출됨");
@@ -71,11 +91,22 @@ async function exportConversationAsMarkdown(options = {}) {
         const conversationData = await fetchConversationData(conversationId, token);
         logDebug("대화 JSON 일부:", JSON.stringify(conversationData).slice(0, 200));
 
-        // (D) JSON -> Markdown 변환
-        const mdContent = convertJsonToMarkdown(conversationData, { showTimestamp, allRoles });
-        logDebug(`Markdown 변환 결과 길이: ${mdContent.length}`);
+        // (B1) Compute prefix from create_time
+        let createdTimestamp = conversationData.create_time || Math.floor(Date.now()/1000);
+        const datePart = formatDateTimeForFilename(createdTimestamp);
+        const globalPrefix = `chatgpt_${datePart}_`;
 
-        // (E) Blob URL 생성 -> 백그라운드로 다운로드 요청
+        // (D) JSON -> Markdown 변환
+        const { markdown, images } = await convertJsonToMarkdown(conversationData, {
+            conversationId,
+            token,
+            showTimestamp,
+            allRoles,
+            showImagePrompt,
+            globalPrefix
+        });
+        logDebug(`Markdown 변환 결과 길이: ${markdown.length}`);
+
         let safeTitle = null;
         if (conversationData.title && conversationData.title.trim().length > 0) {
             safeTitle = sanitizeFileName(conversationData.title.trim());
@@ -84,11 +115,53 @@ async function exportConversationAsMarkdown(options = {}) {
             }
         }
 
-        const fileName = safeTitle
-            ? `chatgpt_${safeTitle}.md`
-            : `chatgpt_conversation_${conversationId}.md`;
+        let mdFilename;
+        if (safeTitle) {
+            mdFilename = `${globalPrefix}${safeTitle}.md`;
+        } else {
+            mdFilename = `${globalPrefix}conversation_${conversationId}.md`;
+        }
 
-        downloadViaBackground(mdContent, fileName);
+        // Gather files to download in one pass
+        const filesToDownload = [];
+
+        // (A) Markdown as a Blob
+        const mdBlob = new Blob([markdown], { type: "text/markdown" });
+        filesToDownload.push({ blob: mdBlob, filename: mdFilename });
+
+        // (B) Images
+        for (const img of images) {
+            filesToDownload.push({ blob: img.blob, filename: img.filename });
+        }
+
+        // (C) Download them all in a single pass using async/await and Blob.arrayBuffer()
+        for (const file of filesToDownload) {
+            try {
+                const arrayBuffer = await file.blob.arrayBuffer();
+                const base64Data = arrayBufferToBase64(arrayBuffer);
+                const dataUrl = `data:${file.blob.type};base64,${base64Data}`;
+
+                chrome.runtime.sendMessage(
+                    {
+                        type: "REQUEST_DOWNLOAD",
+                        data: {
+                            dataUrl,
+                            fileName: file.filename
+                        }
+                    },
+                    (res) => {
+                        if (!res || !res.ok) {
+                            console.error("다운로드 실패:", res?.error || "");
+                        } else {
+                            console.log(`다운로드 시작 (ID: ${res.downloadId || "?"})`);
+                        }
+                    }
+                );
+            } catch (err) {
+                console.error("다운로드 오류:", err);
+            }
+        }
+
 
         logDebug("exportConversationAsMarkdown() 완료");
     } catch (err) {
@@ -148,30 +221,29 @@ async function fetchConversationData(conversationId, token) {
 /**
  * JSON -> Markdown 변환
  */
-function convertJsonToMarkdown(conversationData, opts = {}) {
+async function convertJsonToMarkdown(conversationData, opts = {}) {
     const { title, create_time, update_time, mapping } = conversationData;
     if (!mapping) {
         throw new Error("대화 데이터에 mapping이 없습니다.");
     }
 
-    const { showTimestamp = false, allRoles = false } = opts;
+    const {
+        showTimestamp = false,
+        allRoles = false,
+        showImagePrompt = false,
+        globalPrefix = ''
+    } = opts;
     let lines = [];
+    const imagesToSave = [];
+    let imageCounter = 1;
 
     // (1) 문서 제목/시간
     const docTitle = title ? title.trim() : "제목 없음";
     lines.push(`# ${docTitle}`);
 
-    let createdStr = "";
-    if (typeof create_time === "number") {
-        const createdDate = new Date(create_time * 1000);
-        createdStr = createdDate.toLocaleString();
-    }
+    let createdStr = formatLocalDateTime(create_time);
 
-    let updatedStr = "";
-    if (typeof update_time === "number") {
-        const updatedDate = new Date(update_time * 1000);
-        updatedStr = updatedDate.toLocaleString();
-    }
+    let updatedStr = formatLocalDateTime(update_time);
 
     const timeTexts = [];
     if (createdStr) {
@@ -187,38 +259,37 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
     }
 
     // (2) 메시지 표시 함수
-    function addMessageLine(roleLabel, timeString, text) {
-        lines.push(`### ${roleLabel}`);
-        if (showTimestamp && timeString) {
-            lines.push(`(${timeString})`);
-            lines.push("");
+    function addMessageLine(role, timeString, text) {
+
+        let roleLabel;
+        if (role === "user") {
+            roleLabel = "USER";
+        } else if (role === "assistant") {
+            roleLabel = "ASSISTANT";
+        } else {
+            roleLabel = `(${role})`.toUpperCase();
         }
 
-        // user → 코드 블록
-        if (roleLabel === "USER") {
+        lines.push(`### ${roleLabel}`);
+        if (showTimestamp && timeString) {
+            lines.push(`(${timeString})\n`);
+        }
+
+        if (role === "user") {
+            // user → 코드 블록
             lines.push("```");
-            text.split("\n").forEach((line) => {
-                lines.push(line);
-            });
+            text.split("\n").forEach((line) => lines.push(line));
             lines.push("```");
+        } else {
+            // assistant, tool, system 등 → 동일 텍스트 처리
+            text.split("\n").forEach((line) => lines.push(line));
         }
-        // assistant → 그냥 텍스트
-        else if (roleLabel === "ASSISTANT") {
-            text.split("\n").forEach((line) => {
-                lines.push(line);
-            });
-        }
-        // 그 외 → 그대로 출력
-        else {
-            text.split("\n").forEach((line) => {
-                lines.push(line);
-            });
-        }
+
         lines.push("\n---\n");
     }
 
     // (3) 트리 구조 순회
-    function traverse(nodeId) {
+    async function traverse(nodeId) {
         const node = mapping[nodeId];
         if (!node) return;
 
@@ -263,14 +334,94 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
                 }
                 // doc_id 처리한 메세지는 패스
                 messageText = "";
+            } else if (contentType === "multimodal_text" && Array.isArray(msg.content?.parts)) {
+                let combinedImages = "";
+                for (const part of msg.content.parts) {
+                    if (part.content_type === "image_asset_pointer" && part.asset_pointer) {
+                        try {
+                            // (A) parse fileId from asset pointer
+                            const pointer = part.asset_pointer; // e.g. "file-service://file-HospME3Lxm69M5F64qDjTK"
+                            const fileId = pointer.replace("file-service://", "");
+
+                            // (B) build attachment download API URL
+                            const attachmentUrl = `https://chatgpt.com/backend-api/conversation/${opts.conversationId}/attachment/${fileId}/download`;
+
+                            // (C) fetch attachment info to get the real download_url
+                            const attachResp = await fetch(attachmentUrl, {
+                                method: "GET",
+                                headers: {
+                                    authorization: `Bearer ${opts.token}`,
+                                    accept: "application/json"
+                                }
+                            });
+                            if (!attachResp.ok) {
+                                throw new Error(`첨부파일 API 실패: ${attachResp.status} ${attachResp.statusText}`);
+                            }
+                            const attachJson = await attachResp.json();
+                            const signedUrl = attachJson.download_url;
+                            if (!signedUrl.includes('sig=')) {
+                                console.log("[INFO] No 'sig' parameter in signedUrl, skipping image fetch:", signedUrl);
+                                continue;
+                            }
+
+                            // (D) 이제 signedUrl로 실제 이미지를 Blob으로 변환
+                            console.log("[DEBUG] Attempting to fetch image from URL:", signedUrl);
+                            const imageBlob = await fetchImageAsBlob(signedUrl);
+                            console.log("[DEBUG] Fetched imageBlob with size:", imageBlob.size);
+
+                            // (E) 파일 이름 생성
+                            const originalFilename = attachJson.file_name || `image_${imageCounter}.webp`;
+                            const prefixedFilename = `${globalPrefix}${originalFilename.trim()}`;
+                            const imageFilename = sanitizeFileName(prefixedFilename);
+                            imageCounter++;
+                            // Markdown에 이미지 참조
+                            combinedImages += `<img src="${imageFilename}" alt="image" style="max-width: 360px;" />\n\n`;
+                            if (showImagePrompt && part.metadata && part.metadata.dalle && part.metadata.dalle.prompt) {
+                                const promptText = part.metadata.dalle.prompt.trim();
+                                combinedImages += `**Prompt**: ${promptText}\n\n`;
+                            }
+                            // 다운로드 목록에 추가
+                            imagesToSave.push({ filename: imageFilename, blob: imageBlob });
+                        } catch (error) {
+                            console.error("이미지 로드 오류:", error);
+                        }
+                    }
+                }
+                if (combinedImages.trim().length > 0) {
+                    let timeString = null;
+                    if (msg.create_time) {
+                        timeString = formatLocalDateTime(msg.create_time);
+                    }
+                    addMessageLine("ASSISTANT", timeString, combinedImages);
+                }
+                // 그 외 텍스트 부분도 처리할 경우 이 아래에서 msg.content.parts를 join해서 append 가능.
             } else {
                 // 그 외 메시지 처리 (일반 텍스트 등)
-                if (typeof msg.content.text === "string") {
-                    messageText = msg.content.text;
-                } else if (Array.isArray(msg.content?.parts)) {
+                // 1) 먼저 JSON 가능성 검사
+                if (typeof msg.content?.parts?.[0] === 'string') {
+                  const rawText = msg.content.parts[0].trim();
+                  let parsedOk = false;
+                  try {
+                    // 시도: JSON.parse
+                    const maybeJson = JSON.parse(rawText);
+                    // 구조상 'response' 필드를 우선 출력
+                    if (maybeJson && typeof maybeJson.response === 'string') {
+                      messageText = maybeJson.response;
+                      parsedOk = true;
+                    }
+                  } catch (err) {
+                    // JSON 파싱 실패 시 무시
+                  }
+                  if (!parsedOk) {
+                    // 정상적으로 파싱되지 않았으면 원래 로직대로 parts join
                     messageText = msg.content.parts.join("\n");
+                  }
+                } else if (typeof msg.content.text === "string") {
+                  messageText = msg.content.text;
+                } else if (Array.isArray(msg.content?.parts)) {
+                  messageText = msg.content.parts.join("\n");
                 } else {
-                    messageText = "";
+                  messageText = "";
                 }
             }
 
@@ -281,31 +432,23 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
             }
 
             if (canAdd) {
-                let roleLabel = role.toUpperCase();
-                if (role !== "user" && role !== "assistant") {
-                    // tool/system => (TOOL) / (SYSTEM)
-                    roleLabel = `(${role})`.toUpperCase();
-                }
-
                 if (!messageText) {
                     console.log("no message text", msg);
                 }
 
                 const joinedText = messageText.trim();
                 if (joinedText.length > 0) {
-                    let timeString = null;
-                    if (msg.create_time) {
-                        const dateObj = new Date(msg.create_time * 1000);
-                        timeString = dateObj.toLocaleString();
-                    }
-                    addMessageLine(roleLabel, timeString, joinedText);
+                    let timeString = msg.create_time ? formatLocalDateTime(msg.create_time) : null;
+                    addMessageLine(role, timeString, joinedText);
                 }
             }
         }
 
         // 자식 노드 재귀
-        if (node.children) {
-            node.children.forEach((childId) => traverse(childId));
+        if (node.children && node.children.length) {
+            for (const childId of node.children) {
+                await traverse(childId);
+            }
         }
     }
 
@@ -323,9 +466,12 @@ function convertJsonToMarkdown(conversationData, opts = {}) {
     if (!rootId) {
         rootId = Object.keys(mapping)[0];
     }
-    traverse(rootId);
+    await traverse(rootId);
 
-    return lines.join("\n");
+    return {
+        markdown: lines.join("\n"),
+        images: imagesToSave
+    };
 }
 
 /**
@@ -357,25 +503,6 @@ function applyUpdatesToCanvasText(docId, updates) {
 }
 
 /**
- * Blob URL -> 백그라운드에서 다운로드 처리
- */
-function downloadViaBackground(mdContent, fileName) {
-    const blob = new Blob([mdContent], { type: "text/markdown" });
-    const blobUrl = URL.createObjectURL(blob);
-
-    chrome.runtime.sendMessage(
-        { type: "REQUEST_DOWNLOAD", data: { blobUrl, fileName } },
-        (res) => {
-            if (!res || !res.ok) {
-                logError("백그라운드 다운로드 실패", res?.error || "");
-            } else {
-                logDebug(`백그라운드 다운로드 시작 (ID: ${res.downloadId || "?"})`);
-            }
-        }
-    );
-}
-
-/**
  * 디버깅 로그 함수들
  */
 function logDebug(...args) {
@@ -385,4 +512,26 @@ function logDebug(...args) {
 function logError(...args) {
     console.error("[content-script ERROR]", ...args);
     chrome.runtime.sendMessage({ type: "ERROR", payload: args.join(" ") });
+}
+
+async function fetchImageAsBlob(url) {
+    const response = await fetch(url, {
+        method: "GET",
+        headers: {
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+        }
+    });
+    if (!response.ok) {
+        throw new Error(`이미지 다운로드 실패: ${response.status} ${response.statusText}`);
+    }
+    return await response.blob();
+}
+
+function arrayBufferToBase64(arrayBuffer) {
+    let binary = "";
+    const bytes = new Uint8Array(arrayBuffer);
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
 }
