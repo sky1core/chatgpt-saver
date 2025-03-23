@@ -397,12 +397,31 @@ async function convertJsonToMarkdown(conversationData, opts = {}) {
                 // 그 외 텍스트 부분도 처리할 경우 이 아래에서 msg.content.parts를 join해서 append 가능.
             } else {
                 // 그 외 메시지 처리 (일반 텍스트 등)
-                if (typeof msg.content.text === "string") {
-                    messageText = msg.content.text;
-                } else if (Array.isArray(msg.content?.parts)) {
+                // 1) 먼저 JSON 가능성 검사
+                if (typeof msg.content?.parts?.[0] === 'string') {
+                  const rawText = msg.content.parts[0].trim();
+                  let parsedOk = false;
+                  try {
+                    // 시도: JSON.parse
+                    const maybeJson = JSON.parse(rawText);
+                    // 구조상 'response' 필드를 우선 출력
+                    if (maybeJson && typeof maybeJson.response === 'string') {
+                      messageText = maybeJson.response;
+                      parsedOk = true;
+                    }
+                  } catch (err) {
+                    // JSON 파싱 실패 시 무시
+                  }
+                  if (!parsedOk) {
+                    // 정상적으로 파싱되지 않았으면 원래 로직대로 parts join
                     messageText = msg.content.parts.join("\n");
+                  }
+                } else if (typeof msg.content.text === "string") {
+                  messageText = msg.content.text;
+                } else if (Array.isArray(msg.content?.parts)) {
+                  messageText = msg.content.parts.join("\n");
                 } else {
-                    messageText = "";
+                  messageText = "";
                 }
             }
 
