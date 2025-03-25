@@ -341,7 +341,15 @@ async function convertJsonToMarkdown(conversationData, opts = {}) {
                         try {
                             // (A) parse fileId from asset pointer
                             const pointer = part.asset_pointer; // e.g. "file-service://file-HospME3Lxm69M5F64qDjTK"
-                            const fileId = pointer.replace("file-service://", "");
+                            let fileId = null;
+                            if (pointer.startsWith("file-service://")) {
+                                fileId = pointer.replace("file-service://", "");
+                            } else if (pointer.startsWith("sediment://")) {
+                                fileId = pointer.replace("sediment://", "");
+                            } else {
+                                console.warn("알 수 없는 asset_pointer 형식:", pointer);
+                                continue;
+                            }
 
                             // (B) build attachment download API URL
                             const attachmentUrl = `https://chatgpt.com/backend-api/conversation/${opts.conversationId}/attachment/${fileId}/download`;
